@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  T2-PS-FIDO2-Manager.ps1  -  T2 PS FIDO2 Manager
+  T2-PS-FIDO2-Manager-1.0.1-CTAP-Compat.ps1  -  T2 PS FIDO2 Manager
   Manage Token2 T2F2 / PIN+ FIDO2 security keys in pure PowerShell.
   Relies only on standard Windows DLLs (hid, setupapi, kernel32, winscard).
   No modules, no libfido2, nothing else to install. Admin rights required.
@@ -168,6 +168,8 @@ $CTAP_GET_INFO   = 0x04
 $CTAP_CLIENT_PIN = 0x06
 $CTAP_RESET      = 0x07
 $CTAP_CRED_MGMT  = 0x0A
+# CTAP 2.0 credentialManagementPreview; paired with legacy getPinToken.
+$CTAP_CRED_MGMT_PREVIEW = 0x41
 $CTAP_CONFIG     = 0x0D
 $CTAP_BIO        = 0x09
 $CTAP_BIO_PREVIEW = 0x40
@@ -207,6 +209,8 @@ $script:bioIdle = $true         # true = not currently awaiting a touch (muted)
 $script:bioCancel = $false      # set by the enroll dialog's Cancel button
 $script:bioCancelSent = $false  # true once CTAPHID_CANCEL has been sent once
 $script:bioDone = 0             # samples captured so far
+# CTAP-COMPAT 1.0.1: selected credential-management command for this run.
+$script:credMgmtCmd = $CTAP_CRED_MGMT
 
 function Write-Log([string]$msg, [string]$level = 'info') { & $script:Log $msg $level }
 
@@ -800,6 +804,7 @@ function Read-FidoInfo {
         Uv              = if ($opts) { $opts['uv'] } else { $null }
         BioEnroll       = if ($opts) { $opts['bioEnroll'] } else { $null }
         CredMgmt        = if ($opts) { $opts['credMgmt'] } else { $null }
+        CredentialMgmtPreview = if ($opts) { $opts['credentialMgmtPreview'] } else { $null }
         Rk              = if ($opts) { $opts['rk'] } else { $null }
         AlwaysUv        = if ($opts) { $opts['alwaysUv'] } else { $null }
         Options         = if ($opts) { ($opts.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' ' } else { $null }
@@ -930,6 +935,61 @@ function Get-PinToken {
     } finally { $ecdh.Dispose() }
 }
 
+# CTAP 2.0 compatibility: getPinToken (0x05) is valid only with
+# credentialManagementPreview (0x41). It MUST NOT be used with final credMgmt.
+function Get-LegacyPinToken {
+    param([string]$PinVal)
+
+    $ecdh = New-EcdhClientKey
+    try {
+        $peer   = Get-KeyAgreement $ecdh
+        $shared = Get-SharedSecretV1 $ecdh $peer.X $peer.Y
+        $pub    = Get-EcdhPublicXY $ecdh
+        $pinHash    = (Get-Sha256 ([Text.Encoding]::UTF8.GetBytes($PinVal)))[0..15]
+        $pinHashEnc = Invoke-AesCbcEncrypt $shared ([byte[]]$pinHash)
+
+        $m = [ordered]@{}
+        $m.Add(1, (Write-CborInt 1))                     # pinUvAuthProtocol
+        $m.Add(2, (Write-CborInt 0x05))                  # getPinToken
+        $m.Add(3, (Write-CoseKey $pub.X $pub.Y))         # keyAgreement
+        $m.Add(6, (Write-CborBytes $pinHashEnc))         # pinHashEnc
+
+        $resp = Send-Ctap $CTAP_CLIENT_PIN (Write-CborIntMap $m)
+        if (-not $resp) { throw "no legacy pinToken in response" }
+        $encToken = [byte[]]$resp['2']
+        if (-not $encToken) { throw "legacy pinToken missing from response" }
+
+        $token = Invoke-AesCbcDecrypt $shared $encToken
+        if ($token.Count -ne 16 -and $token.Count -ne 32) {
+            throw "legacy pinToken decrypted to $($token.Count) bytes (spec allows 16 or 32) - bad shared secret"
+        }
+        ,$token
+    } finally { $ecdh.Dispose() }
+}
+
+function Get-CredMgmtToken {
+    param([string]$PinVal, $FidoInfo)
+
+    if (-not $FidoInfo) { throw "cannot read getInfo" }
+    if ($FidoInfo.CredMgmt -eq $true) {
+        try {
+            $script:credMgmtCmd = $CTAP_CRED_MGMT
+            return Get-PinToken -PinVal $PinVal -Permissions $PERM_CRED_MGMT
+        }
+        catch {
+            # 0x01 means the command was rejected before PIN validation. Do not
+            # fall back on PIN_INVALID or any other PIN/authentication error.
+            if ($_.Exception.Message -notmatch 'CTAP error 0x01' -or $FidoInfo.CredentialMgmtPreview -ne $true) { throw }
+            Write-Log "getPinUvAuthTokenUsingPinWithPermissions unsupported; using credentialManagementPreview compatibility path." 'warn'
+        }
+    }
+    if ($FidoInfo.CredentialMgmtPreview -ne $true) {
+        throw "this key does not advertise a usable credential-management API"
+    }
+    $script:credMgmtCmd = $CTAP_CRED_MGMT_PREVIEW
+    Get-LegacyPinToken -PinVal $PinVal
+}
+
 # pinUvAuthParam = HMAC-SHA256(token, subCmdByte || cbor(params))[0..15]
 function Send-CredMgmt([byte[]]$Token, [byte]$Sub, [byte[]]$ParamsCbor) {
     $authInput = [byte[]]@($Sub)
@@ -941,7 +1001,7 @@ function Send-CredMgmt([byte[]]$Token, [byte]$Sub, [byte[]]$ParamsCbor) {
     if ($ParamsCbor) { $m.Add(2, $ParamsCbor) }
     $m.Add(3, (Write-CborInt 1))                       # pinUvAuthProtocol
     $m.Add(4, (Write-CborBytes ([byte[]]$auth)))
-    Send-Ctap $CTAP_CRED_MGMT (Write-CborIntMap $m)
+    Send-Ctap $script:credMgmtCmd (Write-CborIntMap $m)
 }
 
 function Get-CredsMetadata([byte[]]$Token) {
@@ -2215,7 +2275,7 @@ function Show-Gui {
         & $withDevice {
             param($dev)
             $gridCreds.Rows.Clear()
-            $tok = Get-PinToken -PinVal $pin -Permissions $PERM_CRED_MGMT
+            $tok = Get-CredMgmtToken -PinVal $pin -FidoInfo (Read-FidoInfo)
             $meta = Get-CredsMetadata $tok
             if ($meta) {
                 $free = if ($meta.MaxRemaining -ne $null) { $meta.MaxRemaining } else { '?' }
@@ -2250,7 +2310,7 @@ function Show-Gui {
         if (-not $pin) { return }
         & $withDevice {
             param($dev)
-            $tok = Get-PinToken -PinVal $pin -Permissions $PERM_CRED_MGMT
+            $tok = Get-CredMgmtToken -PinVal $pin -FidoInfo (Read-FidoInfo)
             Write-Log (Remove-ResidentCredential $tok $cid)
             $gridCreds.Rows.Remove($row)
             if ($gridCreds.Rows.Count -eq 0) {
@@ -2937,7 +2997,7 @@ function Invoke-Cli {
             if (-not $p) { Write-Host "Cancelled." -ForegroundColor Yellow; return 1 }
 
             $tok = $null
-            try { $tok = Get-PinToken -PinVal $p -Permissions $PERM_CRED_MGMT }
+            try { $tok = Get-CredMgmtToken -PinVal $p -FidoInfo (Read-FidoInfo) }
             catch {
                 Write-Host $_.Exception.Message -ForegroundColor Red
                 $left = $null
