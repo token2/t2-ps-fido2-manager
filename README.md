@@ -17,6 +17,18 @@ There is nothing to install. No NuGet packages, no PowerShell modules, no third-
 
 ---
 
+## Screenshots
+<img width="668" height="504" alt="image" src="https://github.com/user-attachments/assets/00b7570e-ef8b-4aed-9c28-d39ce49d8f90" />
+<img width="668" height="504" alt="image" src="https://github.com/user-attachments/assets/aab14a63-6321-4fb7-bbd1-b95db7c9ef2a" />
+<img width="666" height="504" alt="image" src="https://github.com/user-attachments/assets/8bd9ecc7-4253-4fe6-8847-572dd8471aa6" />
+<img width="666" height="504" alt="image" src="https://github.com/user-attachments/assets/eb9827be-cb09-4e2e-8034-867cc6a3054b" />
+<img width="670" height="504" alt="image" src="https://github.com/user-attachments/assets/10f40960-9bab-4471-ad75-88d73272aeb0" />
+
+
+
+
+
+
 ## Quick start
 
 1. Download `T2-PS-FIDO2-Manager.ps1` from the repository.
