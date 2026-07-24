@@ -2946,11 +2946,14 @@ function Invoke-Cli {
                 return 1
             }
 
-            if ($CredsMeta) { Get-CredsMetadata $tok }
+            # Format-* writes formatting records to the success stream. The CLI
+            # ends with exit, so force immediate host rendering; otherwise the
+            # records are discarded before Out-Default gets to render them.
+            if ($CredsMeta) { Get-CredsMetadata $tok | Format-List | Out-Host }
             if ($CredsList) {
-                $creds = Get-ResidentCredentials $tok
+                $creds = @(Get-ResidentCredentials $tok)
                 if ($creds.Count -eq 0) { Write-Host "No resident credentials." -ForegroundColor Gray }
-                else { $creds | Format-List }
+                else { $creds | Format-List | Out-Host }
             }
             if ($CredsDelete) { Write-Host (Remove-ResidentCredential $tok $CredsDelete) -ForegroundColor Green }
             return 0
@@ -2973,7 +2976,7 @@ function Invoke-Cli {
                 if ($cfg) { foreach ($p in $cfg.PSObject.Properties) { $out[$p.Name] = $p.Value } }
             }
         }
-        [pscustomobject]$out
+        [pscustomobject]$out | Format-List | Out-Host
         return 0
     }
     finally { Close-T2Device }
