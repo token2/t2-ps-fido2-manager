@@ -1,6 +1,7 @@
 #Requires -Version 5.1
+Set-StrictMode -Version 3.0
 <#
-  T2-PS-FIDO2-Manager-1.0.1-CTAP-Compat.ps1  -  T2 PS FIDO2 Manager
+  T2-PS-FIDO2-Manager.ps1  -  T2 PS FIDO2 Manager
   Manage Token2 T2F2 / PIN+ FIDO2 security keys in pure PowerShell.
   Relies only on standard Windows DLLs (hid, setupapi, kernel32, winscard).
   No modules, no libfido2, nothing else to install. Admin rights required.
@@ -2766,6 +2767,7 @@ function Show-Gui {
 # ============================ CLI ============================
 function Read-PinPrompt([string]$prompt) {
     $ss = Read-Host -Prompt $prompt -AsSecureString
+    if ($null -eq $ss) { return $null }
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss)
     try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
@@ -2817,8 +2819,10 @@ function Invoke-Cli {
         for ($i = 0; $i -lt $pool.Count; $i++) {
             $e = $pool[$i]
             $t = if ($null -eq $e) { 'null' } else { $e.GetType().FullName }
-            $c = if ($e -is [Array]) { " COUNT=$($e.Count) <-- NESTED" } else { '' }
-            Write-Log ("  [{0}] {1}{2} Kind={3} HidPath=[{4}]" -f $i, $t, $c, $e.Kind, $e.HidPath) 'debug'
+            $c = if ($null -ne $e -and $e -is [Array]) { " COUNT=$($e.Count) <-- NESTED" } else { '' }
+            $kind = if ($null -ne $e) { $e.Kind } else { 'null' }
+            $hidPath = if ($null -ne $e) { $e.HidPath } else { $null }
+            Write-Log ("  [{0}] {1}{2} Kind={3} HidPath=[{4}]" -f $i, $t, $c, $kind, $hidPath) 'debug'
         }
     }
 
