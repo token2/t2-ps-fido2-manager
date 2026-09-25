@@ -1,5 +1,4 @@
 #Requires -Version 5.1
-Set-StrictMode -Version 3.0
 <#
   T2-PS-FIDO2-Manager.ps1  -  T2 PS FIDO2 Manager
   Manage Token2 T2F2 / PIN+ FIDO2 security keys in pure PowerShell.
@@ -95,6 +94,8 @@ param(
     [string]$Transport = 'auto',
     [switch]$Debug2
 )
+
+Set-StrictMode -Version 3.0
 
 # ======================= P/Invoke: PC/SC =======================
 Add-Type -TypeDefinition @'
