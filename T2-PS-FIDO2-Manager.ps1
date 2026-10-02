@@ -738,9 +738,17 @@ function Send-Ctap([byte]$cmd, [byte[]]$cborPayload) {
 
 # ================== Vendor reads (CCID only) ==================
 function Read-Serial {
-    [void](Send-Apdu $script:selFido)
+    # The SELECT is best-effort. Unelevated, SCardTransmit refuses it with
+    # 0x80100027 and Send-Apdu THROWS - which used to abort Read-Serial before
+    # the vendor 80 33 command (the one that works unelevated) was ever sent.
+    try { [void](Send-Apdu $script:selFido) }
+    catch { if ($script:Debug2) { Write-Log "serial: SELECT skipped ($($_.Exception.Message))" 'debug' } }
     $r = Send-Apdu $script:vendorInfo
-    if (-not $r -or $r.SW1 -ne 0x90 -or $r.SW2 -ne 0x00) { return $null }
+    if (-not $r) { if ($script:Debug2) { Write-Log 'serial: vendor command (80 33) transmit failed' 'debug' }; return $null }
+    if ($r.SW1 -ne 0x90 -or $r.SW2 -ne 0x00) {
+        if ($script:Debug2) { Write-Log ("serial: vendor command returned SW={0:X2}{1:X2}" -f $r.SW1,$r.SW2) 'debug' }
+        return $null
+    }
     $d = $r.Data
     if ($d.Count -lt 2 -or $d[0] -ne 0xD1) { return $null }
     $snLen = $d[1]
@@ -1319,9 +1327,11 @@ function Get-T2Devices {
     foreach ($r in @(Get-PcscReaders)) {
         $sn = $null
         if (Connect-CcidReader $r) {
-            try { $sn = Read-Serial } catch { }
+            try { $sn = Read-Serial }
+            catch { Write-Log "serial read failed on '$r': $($_.Exception.Message)" 'warn' }
             Disconnect-Ccid
         }
+        else { if ($script:Debug2) { Write-Log "cannot connect to '$r' (no card, or held exclusively by another app)" 'debug' } }
         $devs += [pscustomobject]@{
             Kind    = 'ccid'
             Name    = $r
@@ -2792,7 +2802,11 @@ function Invoke-Cli {
     if ($devs.Count -eq 0) { Write-Host "No readers or FIDO devices found." -ForegroundColor Red; return 1 }
 
     # The serial is a vendor APDU: CCID only, whatever transport CTAP uses.
-    $serial = ($devs | Where-Object { $_.Kind -eq 'ccid' -and $_.Serial } | Select-Object -First 1).Serial
+    # StrictMode 3: '(<empty pipeline>).Serial' is '$null.Serial', which throws
+    # "The property 'Serial' cannot be found" when no CCID row has a serial
+    # (HID-only key, or the serial read failed). Test the match first.
+    $ccidWithSerial = $devs | Where-Object { $_.Kind -eq 'ccid' -and $_.Serial } | Select-Object -First 1
+    $serial = if ($ccidWithSerial) { $ccidWithSerial.Serial } else { $null }
 
     if (-not $needsCtap -and -not $Config) {
         if ($serial) { $serial; return 0 }
